@@ -1,12 +1,16 @@
 const express = require("express");
-const { createProxyMiddleware } = require("http-proxy-middleware");
+
+const {
+    createProxyMiddleware,
+    responseInterceptor
+} = require("http-proxy-middleware");
 
 const services = require("./config/services");
 const requestLogger = require("./middleware/requestLogger");
+const cacheMiddleware = require("./middleware/cacheMiddleware");
+const { redisClient } = require("./config/redis");
 
-const app = express();
-
-
+const app = express(); 
 // Logger should run for every incoming request
 app.use(requestLogger);
 
@@ -22,16 +26,48 @@ app.get("/health", (req, res) => {
 // Product Service
 app.use(
     services.product.path,
+
+    cacheMiddleware,
+
     createProxyMiddleware({
         target: services.product.target,
         changeOrigin: true,
 
+        selfHandleResponse: true,
+
         pathRewrite: (path) => {
             return services.product.rewritePath + path;
+        },
+
+        on: {
+            proxyRes: responseInterceptor(
+                async (responseBuffer, proxyRes, req, res) => {
+
+                    if (
+                        req.method === "GET" &&
+                        proxyRes.statusCode === 200 &&
+                        req.cacheKey
+                    ) {
+                        const responseData =
+                            responseBuffer.toString("utf8");
+
+                        await redisClient.setEx(
+                            req.cacheKey,
+                            60,
+                            responseData
+                        );
+
+                        console.log(
+                            `CACHE STORED: ${req.originalUrl}`
+                        );
+                    }
+
+                    return responseBuffer;
+                }
+            )
         }
     })
 );
-
 
 // Order Service
 app.use(

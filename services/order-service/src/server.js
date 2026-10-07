@@ -1,20 +1,32 @@
-const app = require("./app");
-const { connectRedis, redisClient } = require("./config/redis");
+const express = require("express");
 
-const PORT = process.env.PORT || 3000;
+const app = express();
 
-async function startServer() {
-    await connectRedis();
+app.use(express.json());
 
-    await redisClient.set("test", "Redis is working");
+const PORT = process.env.PORT || 4002;
 
-    const value = await redisClient.get("test");
+const orders = [
+    { id: 1, productId: 1, quantity: 2 },
+    { id: 2, productId: 3, quantity: 1 }
+];
 
-    console.log("Redis test:", value);
+app.get("/orders", (req, res) => {
+    res.json(orders);
+});
 
-    app.listen(PORT, () => {
-        console.log(`API Gateway running on port ${PORT}`);
-    });
-}
+app.post("/orders", (req, res) => {
+    const order = {
+        id: orders.length + 1,
+        productId: req.body.productId,
+        quantity: req.body.quantity
+    };
 
-startServer();
+    orders.push(order);
+
+    res.status(201).json(order);
+});
+
+app.listen(PORT, () => {
+    console.log(`Order service running on port ${PORT}`);
+});
