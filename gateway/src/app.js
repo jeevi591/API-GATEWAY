@@ -6,18 +6,32 @@ const {
 } = require("http-proxy-middleware");
 
 const services = require("./config/services");
-const requestLogger = require("./middleware/requestLogger"); 
-const cacheMiddleware = require("./middleware/cacheMiddleware"); 
-const authMiddleware = require("./middleware/authMiddleware");
-const { redisClient } = require("./config/redis"); 
+
+const requestLogger = require("./middleware/requestLogger");
 const rateLimiter = require("./middleware/rateLimiter");
-const app = express(); 
-// Logger should run for every incoming request
-app.use(requestLogger); 
+const cacheMiddleware = require("./middleware/cacheMiddleware");
+const authMiddleware = require("./middleware/authMiddleware");
+
+const { redisClient } = require("./config/redis");
+
+const adminRoutes = require("./routes/adminRoutes");
+
+const {
+    recordServiceMetric
+} = require("./services/healthService");
+
+
+const app = express();
+
+
+// ---------------- GLOBAL MIDDLEWARE ----------------
+
+app.use(requestLogger);
 app.use(rateLimiter);
 
 
-// Gateway health check
+// ---------------- GATEWAY HEALTH ----------------
+
 app.get("/health", (req, res) => {
     res.json({
         status: "Gateway is running"
@@ -25,15 +39,27 @@ app.get("/health", (req, res) => {
 });
 
 
-// Product Service
+// ---------------- ADMIN ROUTES ----------------
+
+app.use("/admin", adminRoutes);
+
+
+// =====================================================
+// PRODUCT SERVICE
+// =====================================================
+
 app.use(
     services.product.path,
 
+    // Products require JWT
     authMiddleware,
+
+    // GET requests can use Redis cache
     cacheMiddleware,
 
     createProxyMiddleware({
         target: services.product.target,
+
         changeOrigin: true,
 
         selfHandleResponse: true,
@@ -43,8 +69,33 @@ app.use(
         },
 
         on: {
+
+            // Backend request start hone ka time
+            proxyReq: (proxyReq, req) => {
+                req.backendStart = Date.now();
+            },
+
+            // Backend response intercept karo
             proxyRes: responseInterceptor(
                 async (responseBuffer, proxyRes, req, res) => {
+
+                    // --------------------------------
+                    // SERVICE HEALTH METRIC
+                    // --------------------------------
+
+                    const latency =
+                        Date.now() - req.backendStart;
+
+                    await recordServiceMetric(
+                        "product",
+                        latency,
+                        proxyRes.statusCode
+                    );
+
+
+                    // --------------------------------
+                    // CACHE RESPONSE
+                    // --------------------------------
 
                     if (
                         req.method === "GET" &&
@@ -65,6 +116,7 @@ app.use(
                         );
                     }
 
+                    // Actual response client ko return
                     return responseBuffer;
                 }
             )
@@ -72,7 +124,11 @@ app.use(
     })
 );
 
-// Order Service
+
+// =====================================================
+// ORDER SERVICE
+// =====================================================
+
 app.use(
     services.order.path,
 
@@ -80,24 +136,68 @@ app.use(
 
     createProxyMiddleware({
         target: services.order.target,
+
         changeOrigin: true,
 
         pathRewrite: (path) => {
             return services.order.rewritePath + path;
+        },
+
+        on: {
+
+            proxyReq: (proxyReq, req) => {
+                req.backendStart = Date.now();
+            },
+
+            proxyRes: (proxyRes, req) => {
+
+                const latency =
+                    Date.now() - req.backendStart;
+
+                recordServiceMetric(
+                    "order",
+                    latency,
+                    proxyRes.statusCode
+                ).catch(console.error);
+            }
         }
     })
 );
 
 
-// Auth Service
+// =====================================================
+// AUTH SERVICE
+// =====================================================
+
 app.use(
     services.auth.path,
+
     createProxyMiddleware({
         target: services.auth.target,
+
         changeOrigin: true,
 
         pathRewrite: (path) => {
             return services.auth.rewritePath + path;
+        },
+
+        on: {
+
+            proxyReq: (proxyReq, req) => {
+                req.backendStart = Date.now();
+            },
+
+            proxyRes: (proxyRes, req) => {
+
+                const latency =
+                    Date.now() - req.backendStart;
+
+                recordServiceMetric(
+                    "auth",
+                    latency,
+                    proxyRes.statusCode
+                ).catch(console.error);
+            }
         }
     })
 );

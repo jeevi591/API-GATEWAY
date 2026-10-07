@@ -14,6 +14,12 @@ app.get("/products", (req, res) => {
     res.json(products);
 });
 
+
+app.get("/products/error", (req, res) => {
+    res.status(500).json({
+        message: "Simulated backend failure"
+    });
+});
 app.get("/products/:id", (req, res) => {
     const id = Number(req.params.id);
 
@@ -26,7 +32,8 @@ app.get("/products/:id", (req, res) => {
     }
 
     res.json(product);
-});
+}); 
+
 
 app.listen(PORT, () => {
     console.log(`Product service running on port ${PORT}`);

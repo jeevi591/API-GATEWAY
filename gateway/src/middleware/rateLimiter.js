@@ -1,46 +1,115 @@
 const { redisClient } = require("../config/redis");
+const {
+    getServiceHealth
+} = require("../services/healthService");
 
-const WINDOW_SIZE = 60 * 1000; // 60 seconds
-const MAX_REQUESTS = 5;
+const WINDOW_SIZE = 60 * 1000;
+const BASE_LIMIT = 5;
+
+
+function getServiceName(path) {
+    if (path.startsWith("/api/products")) {
+        return "product";
+    }
+
+    if (path.startsWith("/api/orders")) {
+        return "order";
+    }
+
+    if (path.startsWith("/api/auth")) {
+        return "auth";
+    }
+
+    return "gateway";
+}
+
 
 async function rateLimiter(req, res, next) {
     try {
         const now = Date.now();
-
         const windowStart = now - WINDOW_SIZE;
 
-        // Abhi IP ke basis par user identify kar rahe hain
         const clientId = req.ip;
 
-        const key = `rate_limit:${clientId}`;
+        const serviceName =
+            getServiceName(req.originalUrl);
 
-        // Purane timestamps hata do
+        let effectiveLimit = BASE_LIMIT;
+        let healthStatus = "unknown";
+
+        if (serviceName !== "gateway") {
+            const health =
+                await getServiceHealth(serviceName);
+
+            healthStatus = health.status;
+
+            // Bahut kam samples ke basis par
+            // limit change nahi karenge
+            if (health.sampleCount >= 3) {
+
+                if (health.status === "degraded") {
+                    effectiveLimit =
+                        Math.max(
+                            1,
+                            Math.floor(BASE_LIMIT * 0.75)
+                        );
+                }
+
+                if (health.status === "critical") {
+                    effectiveLimit =
+                        Math.max(
+                            1,
+                            Math.floor(BASE_LIMIT * 0.5)
+                        );
+                }
+            }
+        }
+
+
+        const key =
+            `rate_limit:${clientId}:${serviceName}`;
+
         await redisClient.zRemRangeByScore(
             key,
             0,
             windowStart
         );
 
-        // Last 60 sec me kitni requests hain?
-        const requestCount = await redisClient.zCard(key);
+        const requestCount =
+            await redisClient.zCard(key);
 
-        // Headers useful hain Postman/debugging ke liye
-        res.setHeader("X-RateLimit-Limit", MAX_REQUESTS);
 
-        if (requestCount >= MAX_REQUESTS) {
-            res.setHeader("X-RateLimit-Remaining", 0);
+        res.setHeader(
+            "X-RateLimit-Limit",
+            effectiveLimit
+        );
+
+        res.setHeader(
+            "X-Service-Health",
+            healthStatus
+        );
+
+
+        if (requestCount >= effectiveLimit) {
+
+            res.setHeader(
+                "X-RateLimit-Remaining",
+                0
+            );
 
             console.log(
-                `RATE LIMIT EXCEEDED: ${clientId}`
+                `RATE LIMIT EXCEEDED: ${clientId} | ${serviceName} | limit=${effectiveLimit}`
             );
 
             return res.status(429).json({
                 error: "Too many requests",
-                message: "Please try again later"
+                service: serviceName,
+                health: healthStatus,
+                limit: effectiveLimit
             });
         }
 
-        // Current request ka timestamp store karo
+
         await redisClient.zAdd(key, [
             {
                 score: now,
@@ -48,20 +117,21 @@ async function rateLimiter(req, res, next) {
             }
         ]);
 
-        // Redis key ko permanently store nahi karna
         await redisClient.expire(key, 60);
 
         res.setHeader(
             "X-RateLimit-Remaining",
-            MAX_REQUESTS - requestCount - 1
+            effectiveLimit - requestCount - 1
         );
 
         next();
 
     } catch (error) {
-        console.error("Rate limiter error:", error);
+        console.error(
+            "Rate limiter error:",
+            error
+        );
 
-        // Redis fail ho jaye to फिलहाल request block nahi karenge
         next();
     }
 }
