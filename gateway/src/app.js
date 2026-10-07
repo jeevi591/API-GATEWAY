@@ -6,13 +6,15 @@ const {
 } = require("http-proxy-middleware");
 
 const services = require("./config/services");
-const requestLogger = require("./middleware/requestLogger");
-const cacheMiddleware = require("./middleware/cacheMiddleware");
-const { redisClient } = require("./config/redis");
-
+const requestLogger = require("./middleware/requestLogger"); 
+const cacheMiddleware = require("./middleware/cacheMiddleware"); 
+const authMiddleware = require("./middleware/authMiddleware");
+const { redisClient } = require("./config/redis"); 
+const rateLimiter = require("./middleware/rateLimiter");
 const app = express(); 
 // Logger should run for every incoming request
-app.use(requestLogger);
+app.use(requestLogger); 
+app.use(rateLimiter);
 
 
 // Gateway health check
@@ -27,6 +29,7 @@ app.get("/health", (req, res) => {
 app.use(
     services.product.path,
 
+    authMiddleware,
     cacheMiddleware,
 
     createProxyMiddleware({
@@ -72,6 +75,9 @@ app.use(
 // Order Service
 app.use(
     services.order.path,
+
+    authMiddleware,
+
     createProxyMiddleware({
         target: services.order.target,
         changeOrigin: true,
